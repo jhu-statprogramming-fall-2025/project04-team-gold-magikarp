@@ -1,0 +1,614 @@
+---
+title: "Executive Economics"
+format: 
+  dashboard:
+    logo: images/Executive_Economics_Logo.png
+    theme: flatly
+    nav-buttons:
+      - icon: github
+        href: https://github.com/louiseoh18/project04-goldmagikarp.git
+server: shiny
+bibliography: data-refs.bib
+nocite: |
+  @*
+---
+
+```{r}
+#| context: setup
+library(here)
+library(shiny)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(randomForest)
+library(zoo)
+
+# TO-DO:
+# Reference page: Can maybe format into columns for better aesthetics (minimize white space).
+```
+
+# Home
+
+## Welcome message
+
+**Welcome to Executive Economics!**<br>
+
+This dashboard is designed to provide an accessible overview of historical presidential approval ratings, and explore how different economic indicators may play a role in a leader's public perception. The dashboard is interactive and user-friendly, allowing users to select different presidents, toggle between economic indicators of interest, and even modify values of economic indicators to predict how they will influence the approval rating of the current U.S. president. 
+
+**TUTORIAL**<br>
+
+1. **Historical Data**
+    - Select a U.S. president you would like to examine.
+    - The graph immediately below your selection will display all available approval ratings over the course of the president's term(s). This graph also includes important historical events to give context to potential changes in ratings.
+    - On the bottom graph, you can toggle between economic indicators which will display how those indicators changed over the course of the president's term(s).
+    - Since both the approval rating graph and indicator graph span the same time frame, you can directly compare the two.
+    - See how approval ratings and economic indicators were different between various presidents.
+    - A summary table and party affiliation banner are also provided to the left for reference.
+<br><br>
+
+2. **Comparing Presidents**
+    - Select two or more U.S. presidents to compare.
+    - The graphs below will display approval, disapproval, and unsure ratings respectively for all presidents over their time in office (measured in months).
+    - Because presidents' data are displayed together, you can easily compare differences in approval ratings between leaders.
+<br><br>
+
+3. **Prediction and Modeling**
+    - The graph displays our pre-trained model's prediction for the current president's approval rating for the next 6 months (status quo). This model was trained based on the historical approval ratings and economic indicators from the dashboard's previous page.
+    - The dotted blue line shows the status quo which is predicted approval rating assuming most recent economic data stays consistent indefinitely.
+    - The red line shows the simulated prediction based on your own "what-if" scenarios. You can modify the economic indicators in the side panel to the left to see how each one may change the president's approval rating.
+    - You can see summaries of these predicted approval ratings in the right-most panels for the status quo and the simulation (6-month and long-term predictions).
+
+### Images {width="22%"}
+![](images/Executive_Economics_Logo.png)
+![](images/Money.png)
+
+# Historical Data
+
+```{r}
+#| context: setup
+load(here("data/complete_data.rda"))
+final_combined_data <- final_combined_data %>%
+  arrange(desc(date))
+```
+
+## {.toolbar}
+
+```{r}
+selectInput(
+        inputId = "president",
+        label = "Choose a President:",
+        choices = unique(final_combined_data$president)[!is.na(unique(final_combined_data$president))],
+        selectize = FALSE,
+        selected = "Trump (2nd Term)"
+      )
+```
+
+## Approval Rating Card
+
+### Historical page graphic {width="20%"}
+
+```{r}
+#| title: "Summary"
+tableOutput("snapshot_tbl")
+```
+
+### Approval plot {width="80%"}
+
+```{r}
+#| title: "U.S. Presidential Approval Ratings"
+plotOutput("approval_plot")
+```
+
+## Economic Indicator Card
+
+### Econ selection {width="20%"}
+
+```{r}
+
+uiOutput("party_banner")
+
+```
+
+```{r}
+econ_labels <- c(
+  "Real GDP" = "Real_GDP",
+  "Disposable Income" = "Disposable_Income",
+  "Corporate Profits" = "Corporate_Profits",
+  "Healthcare Price Index" = "Healthcare_Price_Index",
+  "Government Spending" = "Gov_Spending",
+  "Personal Savings Rate" = "Personal_Saving_Rate",
+  "Unemployment Rate" = "unemployment_rate",
+  "Consumer Price Index" = "consumer_p_index",
+  "Total Jobs" = "total_nonfarm_jobs",
+  "Average Hourly Earnings" = "avg_hourly_earnings"
+)
+selectInput(inputId = "econ_var",
+            label = "Select Economic Indicator:",
+            choices = econ_labels
+            )
+```
+
+### Economic Plot {width = "80%"}
+
+```{r}
+#| title: "Economic Indicators"
+plotOutput("econ_plot")
+
+```
+
+
+```{r}
+#| context: server
+econ_labels <- c(
+  "Real GDP" = "Real_GDP",
+  "Disposable Income" = "Disposable_Income",
+  "Corporate Profits" = "Corporate_Profits",
+  "Healthcare Price Index" = "Healthcare_Price_Index",
+  "Government Spending" = "Gov_Spending",
+  "Personal Savings Rate" = "Personal_Saving_Rate",
+  "Unemployment Rate" = "unemployment_rate",
+  "Consumer Price Index" = "consumer_p_index",
+  "Total Jobs" = "total_nonfarm_jobs",
+  "Average Hourly Earnings" = "avg_hourly_earnings"
+)
+pres_data <- reactive({
+    final_combined_data |> filter(president %in% input$president)
+  })
+
+# Summary table
+output$snapshot_tbl <- renderTable({
+  var <- input$econ_var
+  req(input$president)
+  pres_data() |>
+    select(approval_rating, disapproval_rating, input$econ_var) |>
+    rename("Approval Rating (%)" = approval_rating,
+           "Disapproval Rating (%)" = disapproval_rating,
+           !!names(econ_labels)[econ_labels == var]:= all_of(var))
+  })
+  
+# Approval rating plot
+output$approval_plot <- renderPlot({
+  plot_data <- pres_data()
+  
+  events_data <- plot_data |>
+    filter(!is.na(important_events))
+  
+  ggplot(plot_data, aes(x = date)) +
+    geom_line(aes(y = approval_rating, color = "Approval"), size = 1) +
+    geom_line(aes(y = disapproval_rating, color = "Disapproval"), size = 1) +
+    geom_line(aes(y = unsure_rating, color = "Unsure"), size = 1) +
+    
+    geom_vline(data = events_data, 
+               aes(xintercept = date), 
+               linetype = "dashed", color = "gray50", alpha = 0.6) +
+    
+    geom_text(data = events_data, 
+              aes(x = date, y = 30, label = important_events), 
+              angle = 90, vjust = -0.6, size = 4, color = "gray30") +
+    
+    scale_color_manual(values = c("#61D04F", "#DF536B", "#2297E6")) +
+    labs(y = "Rating (%)", x = "Date", color = "Rating") +
+    theme_minimal(base_size = 16) +
+    theme(legend.position = "bottom")
+})
+
+# Presidential Party
+output$party_banner <- renderUI({
+  party <- pres_data()$Party[1] 
+  
+  if (!is.na(party) && party == "Republican") {
+    bg_color <- "#EE0000" # Republican Red
+  } else {
+    bg_color <- "#4F94CD" # Democratic Blue
+  }
+  div(
+    class = "alert", 
+    style = paste0("background-color: ", bg_color, "; ",
+                   "display: flex; flex-direction: column; justify-content: center; ",
+                   "align-items: center; height: 80px; text-align: center; border: none;"),
+    
+    h6(HTML("Party:<br>"), 
+       style = "color: white; margin: 0;",
+       span(party, 
+            style = "color: white; font-weight: bold; font-size: 1.5em;")
+    )
+  )
+})
+
+# Economic indicator plot
+output$econ_plot <- renderPlot({
+    var <- input$econ_var
+    friendly_label <- names(econ_labels)[econ_labels == var]
+    pres_data() |>
+      ggplot(aes(x = date, y = .data[[var]])) +
+      geom_line(color = "mediumpurple", linewidth = 1) +
+      labs(y = friendly_label, x = "Date") +
+      theme_minimal(base_size = 16)
+  })
+
+
+
+
+```
+
+# Comparing Presidents
+
+```{r}
+#| context: setup
+load(here("data/comparison_data.rda"))
+```
+
+## {.sidebar}
+```{r}
+
+selectInput(
+  inputId = "pres",
+  label = "Choose Presidents",
+  choices = replace(
+    unique(approval_comparison_data$president),
+    c(1, 2),
+    unique(approval_comparison_data$president)[c(2, 1)]
+    ),
+  selected = c("Donald Trump", "Joe Biden"),
+  multiple = TRUE,
+  selectize = TRUE
+  )
+
+helpText("To add more presidents, click box above to expand drop down menu and select name(s). Use Backspace to remove presidents. If you want to remove a specific president, only select that president and use backspace.")
+
+```
+
+## Plot
+```{r}
+#| title: "Comparing Approval Ratings for U.S. Presidents"
+plotOutput("comparison_approval_plot")
+```
+
+```{r}
+#| context: server
+
+
+presi_data <- reactive({
+  req(input$pres)
+  approval_comparison_data |> filter(president %in% input$pres)
+})
+
+output$comparison_approval_plot <- renderPlot({
+  req(nrow(presi_data()) > 0)
+  
+  # 1. Pivot data to make it "tidy" for ggplot
+  # This puts Approval, Disapproval, and Unsure into one 'value' column
+  plot_data <- presi_data() |>
+    pivot_longer(
+      cols = c(approval_rating, disapproval_rating, unsure_rating),
+      names_to = "rating_type",
+      values_to = "value"
+    ) |>
+    mutate(
+      rating_type = factor(rating_type, 
+                           levels = c("approval_rating", "disapproval_rating", "unsure_rating"),
+                           labels = c("Approval", "Disapproval", "Unsure"))
+    )
+
+  # 2. Plot with Facets
+  ggplot(plot_data, aes(x = months_in_office, y = value, color = president)) +
+    geom_line(linewidth = 1) +
+    
+    # Creates 3 side-by-side panels
+    facet_wrap(~rating_type, nrow = 3) + 
+    
+    # Now use Color for Presidents (Distinct & Clear)
+    scale_color_brewer(palette = "Set1") + 
+    
+    labs(y = "Rating (%)", x = "Months in Office", color = "President") +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "bottom")
+})
+
+```
+
+# Prediction and Modeling
+
+```{r}
+#| context: setup
+
+rf_model <- readRDS(here("data/rf_approval_model.rds"))
+trump_history <- readRDS(here("data/trump_history.rds"))
+
+
+last_actual_row <- tail(trump_history, 1)
+start_date <- last_actual_row$date
+start_approval <- last_actual_row$approval_rating
+
+last_3_approvals <- tail(trump_history$approval_rating, 3)
+if(length(last_3_approvals) < 3) {
+  last_3_approvals <- rep(start_approval, 3)
+}
+
+```
+
+
+## {.sidebar}
+
+### Economic Trajectory
+
+Define the start and end points. The model simulates the trend between them.
+
+```{r}
+
+hr()
+
+# "1. Unemployment Rate (%)"
+div(
+  h6("Unemployment Rate (%)"),
+  splitLayout(
+    numericInput("unemp_start", "Start (Jan '26)", value = 4.5, step = 0.1),
+    numericInput("unemp_end", "End (Dec '27)", value = 5.0, step = 0.1)
+  )
+)
+
+# "2. Inflation Rate (Year-over-Year %)"
+div(
+  h6("Inflation Rate (Year-over-Year %)"),
+      splitLayout(
+        numericInput("inf_start", "Start", value = 3.0, step = 0.1),
+        numericInput("inf_end", "End", value = 2.5, step = 0.1)
+      )
+)
+
+# "3. GDP Growth (Year-over-Year %)"
+div(
+  h6("GDP Growth (Year-over-Year %)"),
+      splitLayout(
+        numericInput("gdp_start", "Start", value = 2.5, step = 0.1),
+        numericInput("gdp_end", "End", value = 1.8, step = 0.1)
+      ),
+)
+
+hr()
+
+# "Secondary Factors (Avg)")
+h6("Secondary Factors (Avg)")
+sliderInput("wages", "Wage Growth (%):", min = 0, max = 6, value = 3.5, step = 0.1)
+sliderInput("healthcare", "Healthcare Inflation (%):", min = 0, max = 10, value = 6.0, step = 0.5)
+sliderInput("jobs", "Job Growth (%):", min = -2, max = 4, value = 1.0, step = 0.1)
+sliderInput("market", "Corp. Profit Growth (%):", min = -10, max = 15, value = 4.0, step = 1)
+
+actionButton("reset", "Reset Scenarios", class = "btn-secondary", width = "100%")
+```
+
+## Main panels {width="80%"}
+
+### Plot {height="65%"}
+```{r}
+#| title: "Presidential Approval Forecaster: Trump 2nd Term"
+plotOutput("forecastPlot", height = "500px")
+```
+
+### Model Methodology {height="35%"}
+```{r}
+div(
+  style = "overflow-y: scroll; height: 100%; padding-right: 10px;", # Adds scroll if text gets too long
+  
+  h5("Algorithm: Recursive Random Forest"),
+  p("This dashboard uses a Random Forest regressor, an ensemble learning method that aggregates predictions from multiple decision trees. Unlike linear models, it captures complex, non-linear relationships (e.g., voters may punish high inflation differently than they reward low inflation).", 
+    style = "font-size: 0.9em; color: #555;"),
+  
+  h6("How the Forecast Works:"),
+  tags$ul(
+    style = "font-size: 0.9em; color: #555;",
+    tags$li(tags$b("Recursive Step:"), " The model predicts one month ahead (t+1). It then assumes that prediction is fact and uses it to predict month t+2. This allows long-term forecasting but means uncertainty compounds over time."),
+    tags$li(tags$b("Anchoring:"), " To prevent jumps, the forecast is 'anchored' to the last known actual approval rating."),
+    tags$li(tags$b("Economic Inputs:"), " The red line reacts to the 10 economic levers on the left. The blue line assumes today's economy stays frozen forever.")
+  ),
+  
+  h6("Limitations & Uncertainty:"),
+  p("This model is purely economistic. It does not account for exogenous shocks such as geopolitical conflicts, scandals, or social unrest. Prediction intervals are not shown, but users should assume wider uncertainty ranges as the forecast moves further into 2027.",
+    style = "font-size: 0.85em; font-style: italic; color: #777;")
+)
+```
+
+## Other Cards {width="20%"}
+
+### card 1 {height="40%"}
+```{r}
+div(class = "alert",
+    style = "background-color: #2980b9;",
+    h6(HTML("Status Quo (May '26)<br>"), 
+       span(textOutput("status_quo_score", inline = TRUE), style = "font-weight: bold; font-size: 2.0em;")),
+    p("Prediction if economy stays exactly as it is today.", style = "color: black; font-size: 0.9em;"))
+```
+
+### card 2 {height="60%"}
+```{r}
+div(class = "alert",
+    style = "background-color: #D55E00;",
+    h6(HTML("Scenario (May '26)<br>"), 
+       span(textOutput("six_month_score", inline = TRUE), style = "font-weight: bold; font-size: 2.0em;")),
+    p("Prediction based on your inputs.", style = "color:black; font-size: 0.9em;"),
+    h6(HTML("<br><br>Long-Term (Dec '27)<br>"), 
+       span(textOutput("final_score", inline = TRUE), style = "font-weight: bold; font-size: 2.0em;")),
+    span(textOutput("change_score"), style = "font-size: 0.9em; color: black;"))
+```
+
+
+```{r}
+#| context: server
+
+observeEvent(input$reset, {
+    updateNumericInput(session, "unemp_start", value = 4.5)
+    updateNumericInput(session, "unemp_end", value = 5.0)
+    updateNumericInput(session, "inf_start", value = 3.0)
+    updateNumericInput(session, "inf_end", value = 2.5)
+    updateNumericInput(session, "gdp_start", value = 2.5)
+    updateNumericInput(session, "gdp_end", value = 1.8)
+    updateSliderInput(session, "wages", value = 3.5)
+    updateSliderInput(session, "healthcare", value = 6.0)
+    updateSliderInput(session, "jobs", value = 1.0)
+    updateSliderInput(session, "market", value = 4.0)
+  })
+  
+  forecast_data <- reactive({
+    future_dates <- seq(start_date + months(1), as.Date("2027-12-01"), by = "month")
+    n_months <- length(future_dates)
+    
+    unemp_seq <- seq(input$unemp_start, input$unemp_end, length.out = n_months)
+    inf_seq   <- seq(input$inf_start, input$inf_end, length.out = n_months)
+    gdp_seq   <- seq(input$gdp_start, input$gdp_end, length.out = n_months)
+    
+    df <- data.frame(
+      date = future_dates,
+      president = "Trump (2nd Term)", 
+      Party = "Republican",
+      Year_Index = year(future_dates),
+      Months_in_Office = seq(11, 11 + n_months - 1),
+      Honeymoon = 0,
+      
+      Unemployment      = unemp_seq,
+      Inflation_Rate    = inf_seq,
+      GDP_Growth        = gdp_seq,
+      Wage_Growth       = rep(input$wages, n_months),
+      Healthcare_Infl   = rep(input$healthcare, n_months),
+      Job_Growth        = rep(input$jobs, n_months),
+      Profit_Growth     = rep(input$market, n_months),
+      Income_Growth     = rep(2.0, n_months), 
+      Gov_Spend_Growth  = rep(1.0, n_months),
+      Savings_Rate      = rep(4.0, n_months),
+      
+      Approval_Lag3     = NA,
+      approval_rating   = NA
+    )
+    
+    approval_buffer <- last_3_approvals
+    
+    for(i in 1:n_months) {
+      df$Approval_Lag3[i] <- approval_buffer[1]
+      pred_val <- predict(rf_model, newdata = df[i, ])
+      df$approval_rating[i] <- pred_val
+      approval_buffer <- c(approval_buffer[-1], pred_val)
+    }
+    
+    first_pred <- df$approval_rating[1]
+    anchor_gap <- start_approval - first_pred
+    df$approval_rating <- df$approval_rating + anchor_gap
+    
+    df$Type <- "Custom Scenario"
+    return(df)
+  })
+  
+  baseline_forecast <- reactive({
+    future_dates <- seq(start_date + months(1), as.Date("2027-12-01"), by = "month")
+    n_months <- length(future_dates)
+    
+    df <- data.frame(
+      date = future_dates,
+      president = "Trump (2nd Term)", 
+      Party = "Republican",
+      Year_Index = year(future_dates),
+      Months_in_Office = seq(11, 11 + n_months - 1),
+      Honeymoon = 0,
+      
+      Unemployment      = rep(4.5, n_months),
+      Inflation_Rate    = rep(3.1, n_months),
+      GDP_Growth        = rep(2.3, n_months),
+      Wage_Growth       = rep(4.0, n_months),
+      Healthcare_Infl   = rep(5.5, n_months),
+      Job_Growth        = rep(1.1, n_months),
+      Profit_Growth     = rep(4.5, n_months),
+      Income_Growth     = rep(2.0, n_months), 
+      Gov_Spend_Growth  = rep(1.0, n_months),
+      Savings_Rate      = rep(4.5, n_months),
+      
+      Approval_Lag3     = NA,
+      approval_rating   = NA
+    )
+    
+    approval_buffer <- last_3_approvals
+    
+    for(i in 1:n_months) {
+      df$Approval_Lag3[i] <- approval_buffer[1]
+      pred_val <- predict(rf_model, newdata = df[i, ])
+      df$approval_rating[i] <- pred_val
+      approval_buffer <- c(approval_buffer[-1], pred_val)
+    }
+    
+    first_pred <- df$approval_rating[1]
+    anchor_gap <- start_approval - first_pred
+    df$approval_rating <- df$approval_rating + anchor_gap
+    
+    df$Type <- "Status Quo"
+    return(df)
+  })
+  
+  output$forecastPlot <- renderPlot({
+    fc_custom <- forecast_data()
+    fc_base <- baseline_forecast()
+    
+    hist_plot <- trump_history %>% mutate(Type = "Actual History")
+    bridge_custom <- last_actual_row; bridge_custom$Type <- "Custom Scenario"
+    bridge_base <- last_actual_row; bridge_base$Type <- "Status Quo"
+    
+    plot_df <- bind_rows(
+      hist_plot, 
+      bridge_custom, fc_custom %>% select(date, approval_rating, Type),
+      bridge_base, fc_base %>% select(date, approval_rating, Type)
+    )
+    
+    six_month_date <- start_date + months(6)
+    
+    ggplot(plot_df, aes(x = date, y = approval_rating, color = Type, linetype = Type, size = Type)) +
+      geom_line() +
+      geom_point(data = filter(plot_df, Type == "Actual History"), size = 3, alpha = 0.8) +
+      
+      geom_vline(xintercept = start_date, linetype = "dotted", color = "gray50") +
+      geom_vline(xintercept = six_month_date, linetype = "dashed", color = "#f39c12", alpha = 0.6) +
+      annotate("text", x = six_month_date, y = max(plot_df$approval_rating, na.rm=T), 
+               label = "6 Months", angle = 90, vjust = -1, color = "#f39c12") +
+      
+      scale_color_manual(values = c("Actual History" = "black", "Custom Scenario" = "#D55E00", "Status Quo" = "#2980b9")) +
+      scale_linetype_manual(values = c("Actual History" = "solid", "Custom Scenario" = "dashed", "Status Quo" = "dotted")) +
+      scale_size_manual(values = c("Actual History" = 1.5, "Custom Scenario" = 1.5, "Status Quo" = 1.2)) +
+      
+      labs(y = "Approval Rating (%)", x = "Year") +
+      theme_minimal(base_size = 16) +
+      theme(legend.position = "bottom") +
+      coord_cartesian(ylim = c(25, 60))
+  })
+  
+  output$six_month_score <- renderText({
+    val <- forecast_data()$approval_rating[6]
+    paste0(round(val, 1), "%")
+  })
+  
+  output$status_quo_score <- renderText({
+    val <- baseline_forecast()$approval_rating[6]
+    paste0(round(val, 1), "%")
+  })
+  
+  output$final_score <- renderText({
+    val <- tail(forecast_data()$approval_rating, 1)
+    paste0(round(val, 1), "%")
+  })
+  
+  output$change_score <- renderText({
+    start_val <- start_approval
+    end_val <- tail(forecast_data()$approval_rating, 1)
+    diff <- end_val - start_val
+    sign <- ifelse(diff >= 0, "+", "")
+    paste0("(", sign, round(diff, 1), "% from today)")
+  })
+
+```
+
+# References
+
+## Description
+
+The data was pulled from a variety of databases using API's and web scraping techniques. Data used for exploratory analysis and dashboard modeling include presidential approval ratings from The American Presidency Project, and economic indicators from the Bureau of Labor Statistics (BLS) and Bureau of Economic Analysis (BEA). U.S. Census and American National Election Studies (ANES) data were also explored for potential insights but were not used in the final dashboard or model due to data frequency limitations.
+
+## Citations
+
+**All Data Sources** <br>
+
+::: {#refs}
+:::
