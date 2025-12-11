@@ -1,0 +1,145 @@
+---
+title: "Data Visualization"
+format: html
+---
+Datasets we will be looking at:
+```{r}
+library(here)
+library(tidyverse)
+load(here("data/anes_clean.rda")) #anes_data and anes_codebook
+load(here("data/bls_data_clean.rda")) #bls_data_clean
+load(here("data/census_clean.rda")) #census_clean
+load(here("data/monthly_approval_clean.rda")) #monthly_approval_clean
+load(here("data/BEA_economic_data.rda")) #final_economic_data
+```
+
+Looking at ANES
+```{r}
+# variables_of_interest <- 
+#     paste(anes_codebook$variable[-1],collapse = "|")
+# 
+# anes_data_clean <- 
+#     anes_data |> 
+#     select(1, matches(variables_of_interest))
+# 
+# visdat::vis_miss(anes_data_clean, warn_large_data = FALSE) + 
+#     theme(axis.text.x = element_blank())
+# 
+# colSums(is.na(anes_data_clean))
+```
+
+Preparing to combine data frames
+```{r}
+bls_data_clean$series_id <- NULL #run chunk 1 if series_id is wanted
+
+bls_data_clean <-
+    bls_data_clean |> 
+    filter(date >= "1941-07-01" & date <= "2025-10-01") |> 
+    pivot_wider(names_from = variable, values_from = value) |> 
+    mutate(consumer_p_index = round(consumer_p_index, 2))
+
+
+```
+
+Checking dates of bls and monthly approval
+```{r}
+range(monthly_approval_clean$date)
+length(monthly_approval_clean$date)
+
+range(bls_data_clean$date)
+length(bls_data_clean$date)
+
+bls_dates <- data.frame(date = bls_data_clean$date)
+approval_dates <- data.frame(date = monthly_approval_clean$date)
+unmatched_dates <- anti_join(bls_dates,approval_dates)
+
+monthly_approval_clean |> filter(date %in% unmatched_dates$date)
+```
+
+There are 107 months where the monthly approval rating wasn't recorded.  A lot of these are FDR and Truman.
+
+```{r}
+
+data_wide <- 
+    monthly_approval_clean |> 
+    full_join(bls_data_clean, by = "date") |> 
+    arrange(desc(date)) |> 
+    mutate(
+        President = ifelse( #if NA is sandwiched by same president's then copy that value
+            zoo::na.locf(President, na.rm = FALSE) == 
+                zoo::na.locf(President, na.rm = FALSE, fromLast = TRUE),
+            zoo::na.locf(President, na.rm = FALSE),
+            NA),
+        President = case_when(
+            date >= "1941-07-01" & date <= "1945-04-01" ~ "Franklin D. Roosevelt",
+            date >= "1945-05-01" & date <= "1953-01-01" ~ "Harry Truman",
+            date == "1977-01-01" ~ "Jimmy Carter",
+            TRUE ~ President)) 
+
+missing_rows <- 
+    data_wide |> 
+    filter(date == "1945-04-01" | date == "1953-01-01" | date == "1977-01-01") |> 
+    mutate(President = case_when( # inagurations missing
+        President == "Jimmy Carter" ~ "Gerald Ford",
+        President == "Harry Truman" ~ "Dwight D. Eisenhower",
+        President == "Franklin D. Roosevelt" ~ "Harry Truman",
+    ))
+
+data_wide <-
+    data_wide |> 
+    add_row(missing_rows) |> 
+    arrange(desc(date)) |> 
+    janitor::clean_names()
+
+data_wide |> 
+    filter(president %in% c("Franklin D. Roosevelt", "Harry Truman")) |> print(n=Inf)
+
+visdat::vis_miss(data_wide, warn_large_data = FALSE)
+```
+
+```{r}
+
+# Join bea data
+
+library(zoo)
+
+final_combined_data <- data_wide |> 
+    full_join(final_economic_data, by = "date") |> 
+    arrange(desc(date))
+
+colnames(final_combined_data)
+
+missing_percentages <- colSums(is.na(final_combined_data)) / nrow(final_combined_data) * 100
+print(missing_percentages)
+
+# Impute missing values
+
+final_combined_data <- final_combined_data %>%
+  arrange(date) %>%
+  fill(Real_GDP, Disposable_Income, Corporate_Profits, Healthcare_Price_Index, .direction = "down") %>% 
+  filter(!(is.na(unemployment_rate) & is.na(approval_rating))) %>% 
+  group_by(president) %>% 
+  mutate(
+    approval_rating = na.approx(approval_rating, na.rm = FALSE),
+    disapproval_rating = na.approx(disapproval_rating, na.rm = FALSE),
+    unsure_rating = na.approx(unsure_rating, na.rm = FALSE)
+  ) %>% 
+  ungroup() %>%
+  fill(Real_GDP, Disposable_Income, Corporate_Profits, Healthcare_Price_Index, .direction = "up")
+
+colSums(is.na(final_combined_data)) / nrow(final_combined_data) * 100
+
+visdat::vis_miss(final_combined_data, warn_large_data = FALSE)
+
+head(final_combined_data)
+
+```
+
+```{r}
+
+
+save(final_combined_data, file = "./data/complete_data.rda")
+
+```
+
+
